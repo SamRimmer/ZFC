@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <link
+      rel="stylesheet"
+      href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css"
+      integrity="sha384-BVYiiSIFeK1dGmJRAkycuHAHRg32OmUcww7on3RYdg4Va+PmSTsz/K68vbdEjh4u"
+      crossorigin="anonymous"
+    />
+    <link type="text/css" rel="stylesheet" href="app.processed.css" />
+  </head>
+  <body>
+    <script type="module">
+      /* GEARBOX CONFIGURATION */
+      const ratios = [4.69, 3.13, 2.1, 1.67, 1.28, 1, 0.84, 0.67];
+      const shifterOptions = ["P", "R", "N", "D", "S"];
+      /* END GEARBOX CONFIGURATION */
+
+      import {
+        Component,
+        html,
+        render,
+      } from "https://unpkg.com/htm/preact/standalone.module.js";
+
+      const unlerp = (min, max, val) => (val - min) / (max - min);
+      const lerp = (min, max, q) => min + (max - min) * q;
+      const map = (val, minIn, maxIn, minOut, maxOut, exp = 1) =>
+        lerp(minOut, maxOut, unlerp(minIn, maxIn, val) ** exp);
+
+      const indexOfSmallest = (a) => {
+        let lowest = 0;
+        for (let i = 1; i < a.length; i++) {
+          if (a[i] < a[lowest]) lowest = i;
+        }
+        return lowest;
+      };
+
+      const title = html`<h1>ZF 8HP transmission simulator</h1>`;
+
+      class ShiftComputer extends Component {
+        constructor(props) {
+          super(props);
+          const defaults = {
+            load: 0.2,
+            redline: 6000,
+            cruiseRPM: 1500,
+            shifterPos: "D",
+            roadSpeed: 70,
+            tyreWidth: 205,
+            tyreAspectRatio: 65,
+            wheelDiameter: 15,
+            finalDrive: 3.08,
+          };
+
+          this.state = defaults;
+
+          this.updateDerivedState(defaults);
+        }
+
+        findGear = (outputRPM) => {
+          const inputRPMs = ratios.map((ratio) => outputRPM * ratio);
+          const validGears = inputRPMs
+            .map((RPM) => RPM > this.state.redline * 0.9)
+            .map((_, i) => i + 1)
+            .filter((i) => i);
+        };
+
+        inputRPMs = (outputRPM) => ratios.map((ratio) => outputRPM * ratio);
+
+        minGear = (outputRPM) =>
+          this.inputRPMs(outputRPM, ratios).findIndex(
+            (RPM) => RPM < this.state.redline
+          ) + 1;
+
+        updateDerivedState = (oldState) => {
+          this.tyreCircumference =
+            (oldState.wheelDiameter * 25.4 +
+              2 * (oldState.tyreWidth * (oldState.tyreAspectRatio / 100))) *
+            Math.PI;
+
+          this.tyreDiameter = this.tyreCircumference / Math.pi
+          debugger;
+          console.log({TyreDiameter: this.tyreDiameter})
+
+          this.halfshaftRPM =
+            ((oldState.roadSpeed / 60) * 1609344) / this.tyreCircumference;
+
+          this.propshaftRPM = this.halfshaftRPM * oldState.finalDrive;
+
+          this.targetGear =
+            indexOfSmallest(
+              this.inputRPMs(this.propshaftRPM).map((rpm) => {
+                if (rpm > oldState.redline) return Infinity;
+                return Math.abs(
+                  map(
+                    oldState.load,
+                    0,
+                    1,
+                    oldState.cruiseRPM,
+                    oldState.redline,
+                    1
+                  ) - rpm
+                );
+              })
+            ) + 1;
+
+          const sp = oldState.shifterPos,
+            tg = this.targetGear;
+
+          const Park = oldState.shifterPos !== "P",
+            A = !(sp == "D" && [3, 4, 5, 6].includes(tg)),
+            B = !(sp == "D" && [6, 7, 8].includes(tg)),
+            C = !(sp == "D" && [1, 3, 5, 6, 7].includes(tg)),
+            D =
+              ["P", "N"].includes(sp) || (sp == "D" && [1, 2, 3].includes(tg)),
+            E = !(sp == "D" && [2, 3, 4, 6, 8].includes(tg)),
+            TCC = sp == "D" && oldState.roadSpeed > 10,
+            LPS = map(oldState.load, 0, 1, 1, 0);
+          this.solenoids = { Park, A, B, C, D, E, TCC, LPS };
+        };
+
+        componentWillUpdate = (_, nextState) => {
+          const s = { ...this.state, ...nextState };
+          this.updateDerivedState(s);
+
+          if (s.animate)
+            setTimeout(() => this.setState({ roadSpeed: roadSpeed + 1 }), 50);
+        };
+
+        getVMax = () =>
+          ((this.state.redline / ratios[7] / this.state.finalDrive) *
+            this.tyreCircumference *
+            60) /
+          1609344;
+
+        render = () => {
+          const s = this.state,
+            propshaft = this.propshaftRPM,
+            halfhaft = this.halfshaftRPM;
+
+          return html`
+            ${title}
+            <form class="container">
+              <div class="col-md-3">
+                <label for="redline">Redline RPM</label>
+                <input
+                  type="range"
+                  min="2500"
+                  max="12000"
+                  step="500"
+                  name="redline"
+                  id="redline"
+                  value=${s.redline}
+                  onInput=${(e) => this.setState({ redline: e.target.value })}
+                />
+                ${s.redline} RPM
+              </div>
+              <div class="col-md-3">
+                <label for="redline">Target cruise RPM</label>
+                <input
+                  type="range"
+                  min="1000"
+                  max=${s.redline}
+                  step="500"
+                  name="redline"
+                  id="redline"
+                  value=${s.cruiseRPM}
+                  onInput=${(e) =>
+                    this.setState({ cruiseRPM: e.target.value - 0 })}
+                />
+                ${s.cruiseRPM} RPM
+              </div>
+              <div class="col-md-3">
+                <label for="roadSpeed">Road speed (mph)</label>
+                <input
+                  type="range"
+                  min="0"
+                  max=${this.getVMax()}
+                  step="0.1"
+                  name="roadSpeed"
+                  id="roadSpeed"
+                  value=${s.roadSpeed}
+                  onInput=${(e) => this.setState({ roadSpeed: e.target.value })}
+                />
+                ${s.roadSpeed}mph
+              </div>
+              <div class="col-md-3">
+                <label for="tyreWidth">Tyre width (mm)</label>
+                <input
+                  type="range"
+                  min="155"
+                  max="395"
+                  step="10"
+                  name="tyreWidth"
+                  id="tyreWidth"
+                  value=${s.tyreWidth}
+                  onInput=${(e) => this.setState({ tyreWidth: e.target.value })}
+                />
+                ${s.tyreWidth}mm wide
+              </div>
+              <div class="col-md-3">
+                <label for="tyreAspectRatio">Tyre aspect ratio (%)</label>
+                <input
+                  type="range"
+                  min="15"
+                  max="75"
+                  step="5"
+                  name="tyreAspectRatio"
+                  id="tyreAspectRatio"
+                  value=${s.tyreAspectRatio}
+                  onInput=${(e) =>
+                    this.setState({ tyreAspectRatio: e.target.value })}
+                />
+                ${s.tyreAspectRatio}% donut factor
+              </div>
+              <div class="col-md-3">
+                <label for="wheelDiameter">Wheel diameter (inches)</label>
+                <input
+                  type="range"
+                  min="10"
+                  max="24"
+                  name="wheelDiameter"
+                  id="wheelDiameter"
+                  value=${s.wheelDiameter}
+                  onInput=${(e) =>
+                    this.setState({ wheelDiameter: e.target.value })}
+                />
+                ${s.wheelDiameter}" wheel
+              </div>
+              <div class="col-md-3">
+                <label for="finalDrive">Final drive ratio</label>
+                <input
+                  type="range"
+                  min="2"
+                  max="5"
+                  step="0.01"
+                  name="finalDrive"
+                  id="finalDrive"
+                  value=${s.finalDrive}
+                  onInput=${(e) =>
+                    this.setState({ finalDrive: e.target.value })}
+                />
+                ${s.finalDrive}:1 rear end ratio
+              </div>
+              <div class="col-md-3">
+                <label for="load">Load</label>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  name="load"
+                  id="load"
+                  value=${s.load}
+                  onInput=${(e) => this.setState({ load: e.target.value })}
+                />
+                ${s.load * 100}% load
+              </div>
+              <div class="col-md-3">
+                <label for="shifterPos">Shifter Position</label>
+                <br />
+                <select
+                  name="shifterPos"
+                  id="shifterPos"
+                  value=${s.shifterPos}
+                  onInput=${(e) =>
+                    this.setState({ shifterPos: e.target.value })}
+                >
+                  ${shifterOptions.map(
+                    (label) => html`<option value=${label}>${label}</option>`
+                  )}
+                </select>
+              </div>
+            </form>
+            <div class="container">
+              <div class="col-md-4">
+                <p>
+                  For road speed ${s.roadSpeed}mph on a 
+                  ${s.tyreWidth}/${s.tyreAspectRatio}R${
+            this.state.wheelDiameter
+          }
+                  wheel, RPMs will be: <br />
+                  Wheel / Halfshaft: ${
+                    Math.round(this.halfshaftRPM / 10) * 10
+                  } RPM
+                  <br />
+                  Propshaft: ${Math.round(this.propshaftRPM / 10) * 10}<br />
+                  Input RPM in each gear will be:
+                  <ol>
+                  ${this.inputRPMs(this.propshaftRPM).map(
+                    (RPM, i) => html`<li>${Math.round(RPM / 50) * 50}</li>`
+                  )}
+                  </ol>
+                </p>
+                <p>
+                  Current RPM target:
+                  ${map(s.load, 0, 1, s.cruiseRPM, s.redline * 0.85, 1)}
+                </p>
+              </div>
+              <div class="col-md-4">
+                <p>
+                  Target gear: ${this.targetGear}
+                </p>
+                <p>
+                  Solenoid states:
+                  <ul>
+                    ${Object.entries(this.solenoids).map(
+                      ([name, state]) =>
+                        html`<li>
+                          ${name}:
+                          ${state == true
+                            ? "Energized"
+                            : state == false
+                            ? "Idle"
+                            : state}
+                        </li>`
+                    )}
+                  </ul>
+                </p>
+              </div>
+            </div>
+          `;
+        };
+      }
+
+      const Wrapper = (props) =>
+        html`<main class="container" role="main">
+          <div class="starter-template">${props.children}</div>
+        </main>`;
+
+      render(
+        html`
+          <${Wrapper}>
+            <${ShiftComputer} />
+          <//>
+        `,
+        document.body
+      );
+    </script>
+  </body>
+</html>
